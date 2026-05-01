@@ -50,6 +50,19 @@ const addCmd = program
 addCmd.action(async (textParts: string[]) => {
     const opts = addCmd.opts();
     await ensureNotesDir();
+
+    // 校验心情值：必须是 emoji 或单字符，防止 -m oon 这种手滑
+    if (opts.mood) {
+      const moodVal = opts.mood as string;
+      // emoji 通常长度 1-2 (含零宽连接符可能更长)，但至少不该全是 ASCII 字母
+      const isAsciiWord = /^[a-zA-Z]+$/.test(moodVal);
+      if (isAsciiWord && moodVal.length > 1) {
+        console.log(chalk.yellow(`⚠ 心情 "${moodVal}" 看起来不太对，是不是把 --mood 写成 -mood 了？`));
+        console.log(chalk.gray('  正确用法: diary add --mood 😊 内容'));
+        return;
+      }
+    }
+
     const content = textParts.join(' ');
     const filePath = getFullPath();
     const timestamp = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
