@@ -3,14 +3,53 @@
 import { Command } from 'commander';
 import { exec } from 'child_process';
 import * as fs from 'fs/promises';
+import { readFileSync } from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import chalk from 'chalk';
 
-// 日记存放目录：F:\Note_CLI\notes
-const NOTES_DIR = path.join(__dirname, '..', 'notes');
+// ========== Config ==========
+const CONFIG_PATH = path.join(os.homedir(), '.diaryrc.json');
 
+interface DiaryConfig {
+  notesDir: string;
+  timezone: string;
+  editor: string;
+}
+
+let notesDir: string;
+let timezone: string;
+let editorCmd: string;
+
+function loadConfigSync(): void {
+  const defaults: DiaryConfig = {
+    notesDir: path.join(__dirname, '..', 'notes'),
+    timezone: 'Asia/Shanghai',
+    editor: 'auto',
+  };
+  try {
+    const raw = readFileSync(CONFIG_PATH, 'utf-8');
+    const parsed = JSON.parse(raw);
+    const merged = { ...defaults, ...parsed };
+    notesDir = merged.notesDir;
+    timezone = merged.timezone;
+    editorCmd = merged.editor;
+  } catch {
+    notesDir = defaults.notesDir;
+    timezone = defaults.timezone;
+    editorCmd = defaults.editor;
+  }
+}
+
+loadConfigSync();
+
+async function saveConfig(config: DiaryConfig): Promise<void> {
+  await fs.writeFile(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+}
+
+// ========== Helpers ==========
 async function ensureNotesDir(): Promise<void> {
-  await fs.mkdir(NOTES_DIR, { recursive: true });
+  await fs.mkdir(notesDir, { recursive: true });
 }
 
 function getFilename(date?: string): string {
@@ -22,7 +61,7 @@ function getFilename(date?: string): string {
 }
 
 function getFullPath(date?: string): string {
-  return path.join(NOTES_DIR, getFilename(date));
+  return path.join(notesDir, getFilename(date));
 }
 
 function escapeHtml(s: string): string {
@@ -33,6 +72,61 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
+function extractTags(content: string): string[] {
+  const matches = content.match(/#[\u4e00-\u9fa5\w]+/g);
+  if (!matches) return [];
+  return [...new Set(matches.map(t => t.slice(1)))];
+}
+
+/**
+ * Parse a diary file into entry blocks.
+ * Returns an array of entries; each entry has the index of the "- " timestamp line
+ * and the list of body lines that belong to it.
+ */
+interface EntryBlock {
+  /** Line index of the "- " timestamp line within the file's lines array */
+  timestampIdx: number;
+  /** All lines that belong to this entry (including the timestamp line) */
+  lines: string[];
+}
+
+function parseEntries(lines: string[]): EntryBlock[] {
+  const entries: EntryBlock[] = [];
+  let currentStart = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trimStart();
+    // A top-level "- " line (not indented sub-list) starts a new entry
+    if (trimmed.startsWith('- ') && !line.startsWith('  - ') && !line.startsWith('\t')) {
+      if (currentStart >= 0) {
+        entries.push({
+          timestampIdx: currentStart,
+          lines: lines.slice(currentStart, i),
+        });
+      }
+      currentStart = i;
+    }
+  }
+  // Last entry
+  if (currentStart >= 0) {
+    entries.push({
+      timestampIdx: currentStart,
+      lines: lines.slice(currentStart),
+    });
+  }
+  return entries;
+}
+
+/**
+ * Check if an entry (its joined lines text) contains the given tag.
+ */
+function entryHasTag(entryLines: string[], tag: string): boolean {
+  const text = entryLines.join('\n');
+  return text.includes(`#${tag}`);
+}
+
+// ========== CLI Setup ==========
 const program = new Command();
 
 program
@@ -48,66 +142,147 @@ const addCmd = program
   .argument('<text...>', '日记内容');
 
 addCmd.action(async (textParts: string[]) => {
-    const opts = addCmd.opts();
-    await ensureNotesDir();
+  const opts = addCmd.opts();
+  await ensureNotesDir();
 
-    // 校验心情值：必须是 emoji 或单字符，防止 -m oon 这种手滑
-    if (opts.mood) {
-      const moodVal = opts.mood as string;
-      // emoji 通常长度 1-2 (含零宽连接符可能更长)，但至少不该全是 ASCII 字母
-      const isAsciiWord = /^[a-zA-Z]+$/.test(moodVal);
-      if (isAsciiWord && moodVal.length > 1) {
-        console.log(chalk.yellow(`⚠ 心情 "${moodVal}" 看起来不太对，是不是把 --mood 写成 -mood 了？`));
-        console.log(chalk.gray('  正确用法: diary add --mood 😊 内容'));
-        return;
+  // 校验心情值：必须是 emoji 或单字符，防止 -m oon 这种手滑
+  if (opts.mood) {
+    const moodVal = opts.mood as string;
+    const isAsciiWord = /^[a-zA-Z]+$/.test(moodVal);
+    if (isAsciiWord && moodVal.length > 1) {
+      console.log(chalk.yellow(`⚠ 心情 "${moodVal}" 看起来不太对，是不是把 --mood 写成 -mood 了？`));
+      console.log(chalk.gray('  正确用法: diary add --mood 😊 内容'));
+      return;
+    }
+  }
+
+  const content = textParts.join(' ');
+  const filePath = getFullPath();
+  const timestamp = new Date().toLocaleString('zh-CN', { timeZone: timezone });
+  const prefix = opts.mood ? `${opts.mood} ` : '';
+  const entry = `- ${prefix}${timestamp}\n  ${content}\n`;
+
+  // 如果文件不存在，先写标题
+  let existing = '';
+  try {
+    existing = await fs.readFile(filePath, 'utf-8');
+  } catch {
+    existing = `# ${getFilename()}\n\n`;
+  }
+
+  await fs.writeFile(filePath, existing + entry, 'utf-8');
+  console.log(chalk.green('✓ 已记录'));
+  console.log(chalk.gray(`  ${getFilename()}`));
+
+  // 检测并显示标签
+  const tags = extractTags(content);
+  if (tags.length > 0) {
+    console.log(chalk.gray(`  🏷 标签: ${tags.join(', ')}`));
+  }
+});
+
+// diary list
+const listCmd = program
+  .command('list')
+  .description('列出所有日记文件')
+  .option('-t, --tag <tag>', '按标签筛选');
+
+listCmd.action(async () => {
+  const opts = listCmd.opts();
+  await ensureNotesDir();
+  const files = await fs.readdir(notesDir);
+  const diaries = files
+    .filter(f => f.endsWith('.md'))
+    .sort()
+    .reverse();
+
+  if (diaries.length === 0) {
+    console.log(chalk.yellow('还没有日记，用 diary add 写第一条吧~'));
+    return;
+  }
+
+  if (opts.tag) {
+    // Filter by tag — show only files that have entries with this tag
+    const tag = opts.tag as string;
+    console.log(chalk.cyan.bold(`\n📖 标签 #${tag} 的日记\n`));
+
+    let totalMatches = 0;
+    for (const file of diaries) {
+      const filePath = path.join(notesDir, file);
+      const content = await fs.readFile(filePath, 'utf-8');
+      const lines = content.split('\n');
+      const entries = parseEntries(lines);
+      const matchingEntries = entries.filter(e => entryHasTag(e.lines, tag));
+
+      if (matchingEntries.length > 0) {
+        const date = file.replace('.md', '');
+        console.log(`  ${chalk.white(date)}  ${chalk.gray(`(${matchingEntries.length} 条)`)}`);
+        totalMatches += matchingEntries.length;
       }
     }
 
-    const content = textParts.join(' ');
-    const filePath = getFullPath();
-    const timestamp = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-    const prefix = opts.mood ? `${opts.mood} ` : '';
-    const entry = `- ${prefix}${timestamp}\n  ${content}\n`;
-
-    // 如果文件不存在，先写标题
-    let existing = '';
-    try {
-      existing = await fs.readFile(filePath, 'utf-8');
-    } catch {
-      existing = `# ${getFilename()}\n\n`;
+    if (totalMatches === 0) {
+      console.log(chalk.yellow(`没有找到包含标签 #${tag} 的日记`));
+    } else {
+      console.log(chalk.gray(`\n  共 ${totalMatches} 条`));
     }
-
-    await fs.writeFile(filePath, existing + entry, 'utf-8');
-    console.log(chalk.green('✓ 已记录'));
-    console.log(chalk.gray(`  ${getFilename()}`));
-  });
-
-// diary list
-program
-  .command('list')
-  .description('列出所有日记文件')
-  .action(async () => {
-    await ensureNotesDir();
-    const files = await fs.readdir(NOTES_DIR);
-    const diaries = files
-      .filter(f => f.endsWith('.md'))
-      .sort()
-      .reverse();
-
-    if (diaries.length === 0) {
-      console.log(chalk.yellow('还没有日记，用 diary add 写第一条吧~'));
-      return;
-    }
-
+  } else {
     console.log(chalk.cyan.bold('📖 日记列表\n'));
     for (const file of diaries) {
-      const filePath = path.join(NOTES_DIR, file);
+      const filePath = path.join(notesDir, file);
       const content = await fs.readFile(filePath, 'utf-8');
       const lines = content.split('\n').filter((l: string) => l.trim());
       const count = lines.length - (lines[0]?.startsWith('#') ? 1 : 0);
       const date = file.replace('.md', '');
       console.log(`  ${chalk.white(date)}  ${chalk.gray(`(${count} 条)`)}`);
     }
+  }
+});
+
+// diary tags
+program
+  .command('tags')
+  .description('列出所有标签及使用次数')
+  .action(async () => {
+    await ensureNotesDir();
+    const files = await fs.readdir(notesDir);
+    const diaryFiles = files
+      .filter(f => f.endsWith('.md'));
+
+    if (diaryFiles.length === 0) {
+      console.log(chalk.yellow('还没有日记，用 diary add 写第一条吧~'));
+      return;
+    }
+
+    const tagCount: Record<string, number> = {};
+
+    for (const file of diaryFiles) {
+      const filePath = path.join(notesDir, file);
+      const content = await fs.readFile(filePath, 'utf-8');
+      const lines = content.split('\n');
+      const entries = parseEntries(lines);
+
+      for (const entry of entries) {
+        const text = entry.lines.join('\n');
+        const tags = extractTags(text);
+        for (const tag of tags) {
+          tagCount[tag] = (tagCount[tag] || 0) + 1;
+        }
+      }
+    }
+
+    if (Object.keys(tagCount).length === 0) {
+      console.log(chalk.yellow('还没有标签，用 diary add 内容 #标签 来添加标签吧~'));
+      return;
+    }
+
+    const sorted = Object.entries(tagCount).sort((a, b) => b[1] - a[1]);
+
+    console.log(chalk.cyan.bold('\n🏷 标签列表\n'));
+    for (const [tag, count] of sorted) {
+      console.log(`  ${chalk.yellow('#' + tag)}  ${chalk.gray(`${count} 条`)}`);
+    }
+    console.log();
   });
 
 // diary today
@@ -152,41 +327,68 @@ program
   });
 
 // diary search <keyword...>
-program
+const searchCmd = program
   .command('search')
   .description('搜索所有日记中的关键词')
-  .argument('<keyword...>', '搜索关键词')
-  .action(async (keywordParts: string[]) => {
-    await ensureNotesDir();
-    const keyword = keywordParts.join(' ').toLowerCase();
-    const files = await fs.readdir(NOTES_DIR);
-    const diaryFiles = files
-      .filter(f => f.endsWith('.md'))
-      .sort()
-      .reverse(); // newest first
+  .option('-t, --tag <tag>', '限定标签')
+  .argument('<keyword...>', '搜索关键词');
 
-    if (diaryFiles.length === 0) {
-      console.log(chalk.yellow('还没有日记，用 diary add 写第一条吧~'));
-      return;
-    }
+searchCmd.action(async (keywordParts: string[]) => {
+  const opts = searchCmd.opts();
+  await ensureNotesDir();
+  const keyword = keywordParts.join(' ').toLowerCase();
+  const files = await fs.readdir(notesDir);
+  const diaryFiles = files
+    .filter(f => f.endsWith('.md'))
+    .sort()
+    .reverse(); // newest first
 
-    interface Match {
-      date: string;
-      filename: string;
-      lines: string[];
-    }
+  if (diaryFiles.length === 0) {
+    console.log(chalk.yellow('还没有日记，用 diary add 写第一条吧~'));
+    return;
+  }
 
-    const results: Match[] = [];
+  interface Match {
+    date: string;
+    filename: string;
+    lines: string[];
+  }
 
-    for (const file of diaryFiles) {
-      const filePath = path.join(NOTES_DIR, file);
-      const content = await fs.readFile(filePath, 'utf-8');
-      const lines = content.split('\n');
+  const results: Match[] = [];
+
+  for (const file of diaryFiles) {
+    const filePath = path.join(notesDir, file);
+    const content = await fs.readFile(filePath, 'utf-8');
+    const lines = content.split('\n');
+
+    if (opts.tag) {
+      // Only search within entries that have the specified tag
+      const entries = parseEntries(lines);
+      const tag = opts.tag as string;
+
+      for (const entry of entries) {
+        if (!entryHasTag(entry.lines, tag)) continue;
+
+        const entryMatches: string[] = [];
+        for (const line of entry.lines) {
+          if (line.toLowerCase().includes(keyword)) {
+            const highlighted = line.replace(
+              new RegExp(keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'),
+              (m) => chalk.yellow(m),
+            );
+            entryMatches.push(highlighted);
+          }
+        }
+        if (entryMatches.length > 0) {
+          const date = file.replace('.md', '');
+          results.push({ date, filename: file, lines: entryMatches });
+        }
+      }
+    } else {
+      // Original behavior: search all lines
       const matches: string[] = [];
-
       for (const line of lines) {
         if (line.toLowerCase().includes(keyword)) {
-          // highlight the keyword in yellow
           const highlighted = line.replace(
             new RegExp(keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'),
             (m) => chalk.yellow(m),
@@ -194,7 +396,6 @@ program
           matches.push(highlighted);
         }
       }
-
       if (matches.length > 0) {
         results.push({
           date: file.replace('.md', ''),
@@ -203,21 +404,24 @@ program
         });
       }
     }
+  }
 
-    if (results.length === 0) {
-      console.log(chalk.yellow(`没有找到包含 "${keywordParts.join(' ')}" 的日记`));
-      return;
-    }
+  if (results.length === 0) {
+    const tagInfo = opts.tag ? ` (限定标签 #${opts.tag})` : '';
+    console.log(chalk.yellow(`没有找到包含 "${keywordParts.join(' ')}" 的日记${tagInfo}`));
+    return;
+  }
 
-    console.log(chalk.cyan.bold(`\n🔍 搜索: "${keywordParts.join(' ')}"\n`));
-    for (const r of results) {
-      console.log(chalk.white.bold(`📅 ${r.date}`));
-      for (const line of r.lines) {
-        console.log(`   ${line.trim()}`);
-      }
-      console.log();
+  const tagInfo = opts.tag ? ` | 标签: #${opts.tag}` : '';
+  console.log(chalk.cyan.bold(`\n🔍 搜索: "${keywordParts.join(' ')}"${tagInfo}\n`));
+  for (const r of results) {
+    console.log(chalk.white.bold(`📅 ${r.date}`));
+    for (const line of r.lines) {
+      console.log(`   ${line.trim()}`);
     }
-  });
+    console.log();
+  }
+});
 
 // diary stats
 program
@@ -225,7 +429,7 @@ program
   .description('日记统计信息')
   .action(async () => {
     await ensureNotesDir();
-    const files = await fs.readdir(NOTES_DIR);
+    const files = await fs.readdir(notesDir);
     const diaryFiles = files
       .filter(f => f.endsWith('.md'))
       .sort(); // oldest first
@@ -238,7 +442,7 @@ program
     let totalEntries = 0;
 
     for (const file of diaryFiles) {
-      const filePath = path.join(NOTES_DIR, file);
+      const filePath = path.join(notesDir, file);
       const content = await fs.readFile(filePath, 'utf-8');
       const lines = content.split('\n');
       // count lines that start with "- " (timestamp entries)
@@ -306,7 +510,10 @@ program
     const platform = process.platform;
     let command: string;
 
-    if (platform === 'win32') {
+    if (editorCmd !== 'auto') {
+      // Use configured editor
+      command = `"${editorCmd}" "${filePath}"`;
+    } else if (platform === 'win32') {
       command = `start "" "${filePath}"`;
     } else if (platform === 'darwin') {
       command = `open "${filePath}"`;
@@ -329,7 +536,7 @@ program
   .description('随机看一篇旧日记')
   .action(async () => {
     await ensureNotesDir();
-    const files = await fs.readdir(NOTES_DIR);
+    const files = await fs.readdir(notesDir);
     const diaryFiles = files
       .filter(f => f.endsWith('.md'));
 
@@ -347,32 +554,16 @@ program
     const allEntries: ParsedEntry[] = [];
 
     for (const file of diaryFiles) {
-      const filePath = path.join(NOTES_DIR, file);
+      const filePath = path.join(notesDir, file);
       const content = await fs.readFile(filePath, 'utf-8');
       const lines = content.split('\n');
+      const entries = parseEntries(lines);
 
-      let currentStart = -1;
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const trimmed = line.trimStart();
-        // Entry line: starts with "- " and not indented further
-        if (trimmed.startsWith('- ') && !line.startsWith('  - ')) {
-          if (currentStart >= 0) {
-            allEntries.push({
-              date: file.replace('.md', ''),
-              timestampLine: lines[currentStart],
-              body: lines.slice(currentStart + 1, i).join('\n'),
-            });
-          }
-          currentStart = i;
-        }
-      }
-      // Last entry in file
-      if (currentStart >= 0) {
+      for (const entry of entries) {
         allEntries.push({
           date: file.replace('.md', ''),
-          timestampLine: lines[currentStart],
-          body: lines.slice(currentStart + 1).join('\n'),
+          timestampLine: entry.lines[0],
+          body: entry.lines.slice(1).join('\n'),
         });
       }
     }
@@ -416,7 +607,7 @@ program
     }
 
     // Build set of existing dates from filenames for O(1) lookup
-    const files = await fs.readdir(NOTES_DIR);
+    const files = await fs.readdir(notesDir);
     const dateSet = new Set(
       files.filter(f => f.endsWith('.md')).map(f => f.replace('.md', ''))
     );
@@ -466,7 +657,7 @@ program
   .argument('[format]', '导出格式: md 或 html', 'md')
   .action(async (format: string) => {
     await ensureNotesDir();
-    const files = await fs.readdir(NOTES_DIR);
+    const files = await fs.readdir(notesDir);
     const diaryFiles = files
       .filter(f => f.endsWith('.md'))
       .sort(); // oldest first
@@ -480,7 +671,7 @@ program
       let output = '';
       for (let i = 0; i < diaryFiles.length; i++) {
         const file = diaryFiles[i];
-        const content = await fs.readFile(path.join(NOTES_DIR, file), 'utf-8');
+        const content = await fs.readFile(path.join(notesDir, file), 'utf-8');
         output += content + '\n---\n';
         if (i < diaryFiles.length - 1) {
           output += '\n';
@@ -495,7 +686,7 @@ program
       let bodyHtml = '';
       for (const file of diaryFiles) {
         const date = file.replace('.md', '');
-        const content = await fs.readFile(path.join(NOTES_DIR, file), 'utf-8');
+        const content = await fs.readFile(path.join(notesDir, file), 'utf-8');
         // Skip header line (# title)
         const lines = content.split('\n');
         const filtered = lines.filter((_l, i) => i !== 0 || !lines[0].startsWith('#'));
@@ -533,6 +724,256 @@ ${bodyHtml}
     }
   });
 
+// diary weekly [date]
+const WEEKDAY_NAMES = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+program
+  .command('weekly')
+  .description('查看本周日记概览')
+  .argument('[date]', '参考日期 YYYY-MM-DD，默认今天')
+  .action(async (dateStr?: string) => {
+    await ensureNotesDir();
+
+    // Determine which week: the week containing `dateStr` (or today)
+    const refDate = dateStr ? new Date(dateStr) : new Date();
+    if (isNaN(refDate.getTime())) {
+      console.log(chalk.red('日期格式错误，请使用 YYYY-MM-DD'));
+      return;
+    }
+
+    // Calculate Monday of that week
+    const dayOfWeek = refDate.getDay(); // 0=Sun
+    const monday = new Date(refDate);
+    monday.setDate(refDate.getDate() - ((dayOfWeek + 6) % 7)); // shift to Monday
+
+    // Pre-load existing diary files
+    const files = await fs.readdir(notesDir);
+    const dateSet = new Set(files.filter(f => f.endsWith('.md')).map(f => f.replace('.md', '')));
+
+    const todayStr = getFilename().replace('.md', '');
+
+    // Format the week range
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    const formatShort = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+    console.log(chalk.cyan.bold(`\n📅 周报  ${formatShort(monday)} ~ ${formatShort(sunday)}\n`));
+
+    for (let i = 0; i < 7; i++) {
+      const day = new Date(monday);
+      day.setDate(monday.getDate() + i);
+      const dateStr2 = formatShort(day);
+      const weekday = WEEKDAY_NAMES[day.getDay()];
+      const isToday = dateStr2 === todayStr;
+
+      const dateLabel = isToday
+        ? chalk.cyan.bold(`${dateStr2} ${weekday}`)
+        : chalk.white(`${dateStr2} ${weekday}`);
+
+      if (!dateSet.has(dateStr2)) {
+        console.log(`  ${dateLabel}  ${chalk.gray('无日记')}`);
+        continue;
+      }
+
+      // Read the file and extract entry info
+      const filePath = path.join(notesDir, `${dateStr2}.md`);
+      const content = await fs.readFile(filePath, 'utf-8');
+      const lines = content.split('\n');
+      const entries = parseEntries(lines);
+
+      if (entries.length === 0) {
+        console.log(`  ${dateLabel}  ${chalk.gray('无日记')}`);
+        continue;
+      }
+
+      // First entry's first body line as preview
+      const firstEntry = entries[0];
+      const bodyLines = firstEntry.lines.slice(1); // skip timestamp line
+      const firstBodyLine = bodyLines.find(l => l.trim()) || '';
+      const preview = firstBodyLine.trim().slice(0, 40);
+      const previewText = preview.length >= 40 ? preview + '...' : preview;
+      const displayPreview = previewText ? chalk.gray(`  ${previewText}`) : '';
+
+      console.log(`  ${dateLabel}  ${chalk.yellow(`${entries.length} 条`)}${displayPreview}`);
+    }
+    console.log();
+  });
+
+// diary undo [count]
+program
+  .command('undo')
+  .description('撤销今天的最后 N 条日记')
+  .argument('[count]', '要撤销的条目数，默认 1', '1')
+  .action(async (countStr: string) => {
+    await ensureNotesDir();
+    const count = parseInt(countStr, 10);
+
+    if (isNaN(count) || count < 1) {
+      console.log(chalk.red('请输入有效的数字（≥1）'));
+      return;
+    }
+
+    const filePath = getFullPath();
+    const filename = getFilename();
+
+    let content: string;
+    try {
+      content = await fs.readFile(filePath, 'utf-8');
+    } catch {
+      console.log(chalk.yellow(`今天（${filename}）还没有日记`));
+      return;
+    }
+
+    const lines = content.split('\n');
+    const entries = parseEntries(lines);
+
+    if (entries.length === 0) {
+      console.log(chalk.yellow(`今天（${filename}）还没有日记条目`));
+      return;
+    }
+
+    const toRemove = Math.min(count, entries.length);
+    const removed = entries.slice(entries.length - toRemove);
+
+    // Show what will be removed
+    console.log(chalk.yellow(`\n⚠ 将撤销 ${toRemove} 条日记：\n`));
+    for (const entry of removed) {
+      const tsLine = entry.lines[0].trimStart();
+      const bodyPreview = entry.lines.slice(1).find(l => l.trim())?.trim().slice(0, 60) || '';
+      console.log(chalk.gray(`  ${tsLine}`));
+      if (bodyPreview) {
+        console.log(chalk.gray(`    ${bodyPreview}${bodyPreview.length >= 60 ? '...' : ''}`));
+      }
+      console.log();
+    }
+
+    // Rebuild the file without the removed entries
+    const remainingEntries = entries.slice(0, entries.length - toRemove);
+    const headerLines: string[] = [];
+    // Keep lines before the first entry (header, blank lines)
+    if (entries.length > 0) {
+      for (let i = 0; i < entries[0].timestampIdx; i++) {
+        headerLines.push(lines[i]);
+      }
+    } else {
+      // Shouldn't reach here since we checked entries.length > 0
+      headerLines.push(...lines.filter(l => l.startsWith('#') || l === ''));
+    }
+
+    const newContent = [
+      ...headerLines,
+      ...remainingEntries.flatMap(e => e.lines),
+    ].join('\n');
+
+    // Ensure trailing newline
+    const finalContent = newContent.endsWith('\n') ? newContent : newContent + '\n';
+    await fs.writeFile(filePath, finalContent, 'utf-8');
+
+    console.log(chalk.green(`✓ 已撤销 ${toRemove} 条日记`));
+  });
+
+// diary config
+const configCmd = program
+  .command('config')
+  .description('查看或修改配置');
+
+configCmd
+  .command('set')
+  .description('设置配置项')
+  .argument('<key>', '配置键名 (notesDir | timezone | editor)')
+  .argument('<value>', '配置值')
+  .action(async (key: string, value: string) => {
+    const validKeys = ['notesDir', 'timezone', 'editor'];
+
+    if (!validKeys.includes(key)) {
+      console.log(chalk.red(`无效的配置项 "${key}"，可选: ${validKeys.join(', ')}`));
+      return;
+    }
+
+    // Load current config from file
+    let config: DiaryConfig;
+    try {
+      const raw = readFileSync(CONFIG_PATH, 'utf-8');
+      config = JSON.parse(raw);
+    } catch {
+      config = {
+        notesDir: path.join(__dirname, '..', 'notes'),
+        timezone: 'Asia/Shanghai',
+        editor: 'auto',
+      };
+    }
+
+    const oldValue = config[key as keyof DiaryConfig];
+
+    // Special handling for notesDir: warn if old notes exist
+    if (key === 'notesDir') {
+      const oldDir = config.notesDir;
+      if (oldDir !== value) {
+        // Check if old dir has notes
+        try {
+          const oldFiles = await fs.readdir(oldDir);
+          const hasNotes = oldFiles.some(f => f.endsWith('.md'));
+          if (hasNotes) {
+            console.log(chalk.yellow(`⚠ 警告: 旧目录 ${oldDir} 中仍有日记文件，切换后这些日记将不可见`));
+            console.log(chalk.gray('  你可以手动迁移文件到新目录，或使用导出功能备份'));
+          }
+        } catch {
+          // Old dir doesn't exist or can't be read — no warning needed
+        }
+      }
+    }
+
+    // Assign value to the correct config key
+    if (key === 'notesDir') config.notesDir = value;
+    else if (key === 'timezone') config.timezone = value;
+    else if (key === 'editor') config.editor = value;
+    await saveConfig(config);
+
+    // Update in-memory values
+    notesDir = config.notesDir;
+    timezone = config.timezone;
+    editorCmd = config.editor;
+
+    console.log(chalk.green(`✓ 已设置 ${key} = ${value}`));
+    console.log(chalk.gray(`  旧值: ${oldValue}`));
+  });
+
+configCmd.action(async () => {
+  // Display current config
+  let config: DiaryConfig;
+  try {
+    const raw = readFileSync(CONFIG_PATH, 'utf-8');
+    config = JSON.parse(raw);
+  } catch {
+    config = {
+      notesDir: path.join(__dirname, '..', 'notes'),
+      timezone: 'Asia/Shanghai',
+      editor: 'auto',
+    };
+  }
+
+  // Check if config file exists
+  const configExists = (() => {
+    try {
+      readFileSync(CONFIG_PATH, 'utf-8');
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  console.log(chalk.cyan.bold('\n⚙ 配置\n'));
+  console.log(`  ${chalk.white('配置路径')}  ${chalk.gray(CONFIG_PATH)}`);
+  if (!configExists) {
+    console.log(chalk.gray('  (使用默认配置，文件尚未创建)\n'));
+  }
+  console.log(`  ${chalk.white('notesDir')}   ${chalk.yellow(config.notesDir)}`);
+  console.log(`  ${chalk.white('timezone')}   ${chalk.yellow(config.timezone)}`);
+  console.log(`  ${chalk.white('editor')}     ${chalk.yellow(config.editor)}`);
+  console.log();
+});
+
 // diary mood (心情追踪)
 const moodCmd = program
   .command('mood')
@@ -543,7 +984,7 @@ moodCmd
   .description('心情统计')
   .action(async () => {
     await ensureNotesDir();
-    const files = await fs.readdir(NOTES_DIR);
+    const files = await fs.readdir(notesDir);
     const diaryFiles = files
       .filter(f => f.endsWith('.md'))
       .sort(); // oldest first
@@ -563,7 +1004,7 @@ moodCmd
 
     for (const file of diaryFiles) {
       const date = file.replace('.md', '');
-      const filePath = path.join(NOTES_DIR, file);
+      const filePath = path.join(notesDir, file);
       const content = await fs.readFile(filePath, 'utf-8');
       const lines = content.split('\n');
 

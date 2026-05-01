@@ -52,9 +52,44 @@ diary add --mood 😊 今天心情不错
 
 # 看心情统计
 diary mood stats
+
+# 写日记带标签
+diary add "学了 Rust 所有权 #学习 #Rust"
+
+# 查看所有标签
+diary tags
+
+# 按标签筛选
+diary list --tag 学习
+
+# 周报视图
+diary weekly
+diary weekly 2026-04-27
+
+# 撤回上一条
+diary undo
+diary undo 3
+
+# 查看/修改配置
+diary config
+diary config set editor code
 ```
 
 所有日记保存在 `notes/` 目录下，每天一个 Markdown 文件。
+
+## 配置
+
+配置文件 `~/.diaryrc.json`（Windows: `%USERPROFILE%\.diaryrc.json`）：
+
+```json
+{
+  "notesDir": "F:/Note_CLI/notes",
+  "timezone": "Asia/Shanghai",
+  "editor": "auto"
+}
+```
+
+可通过 `diary config set <key> <value>` 修改。
 
 ## 技术栈
 
