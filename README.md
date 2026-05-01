@@ -26,6 +26,32 @@ diary list
 
 # 查看某天的日记
 diary read 2026-05-01
+
+# 搜索关键词（支持中文，大小写不敏感）
+diary search Rust
+
+# 统计数据
+diary stats
+
+# 用系统编辑器打开今天日记
+diary edit
+
+# 随机回顾一篇旧日记
+diary random
+
+# 日历视图（写了日记的日期标绿）
+diary calendar
+diary calendar 2026-04
+
+# 导出所有日记
+diary export md
+diary export html
+
+# 记心情
+diary add --mood 😊 今天心情不错
+
+# 看心情统计
+diary mood stats
 ```
 
 所有日记保存在 `notes/` 目录下，每天一个 Markdown 文件。
