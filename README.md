@@ -91,6 +91,16 @@ diary config set editor code
 
 可通过 `diary config set <key> <value>` 修改。
 
+**`editor` 字段可选值**：`auto` 为系统默认编辑器，也可指定启动命令：
+
+```bash
+diary config set editor code        # VS Code
+diary config set editor notepad     # 记事本
+diary config set editor typora      # Typora
+diary config set editor "D:\Sublime Text\sublime_text.exe"  # 任何编辑器路径
+diary config set editor auto        # 恢复系统默认
+```
+
 ## 技术栈
 
 - TypeScript
