@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import chalk from 'chalk';
-import { ensureNotesDir, getFilename } from '../utils';
+import { ensureNotesDir, getFilename, parseEntries, tzNow } from '../utils';
 import { notesDir } from '../config';
 
 export function registerStats(program: Command): void {
@@ -27,12 +27,8 @@ export function registerStats(program: Command): void {
         const filePath = path.join(notesDir, file);
         const content = await fs.readFile(filePath, 'utf-8');
         const lines = content.split('\n');
-        // count lines that start with "- " (timestamp entries)
-        for (const line of lines) {
-          if (/^- \d/.test(line.trimStart())) {
-            totalEntries++;
-          }
-        }
+        // parseEntries 认所有顶层 "- " 条目，带心情前缀（如 "- 😊 2026/..."）的也会计入
+        totalEntries += parseEntries(lines).length;
       }
 
       const firstDate = diaryFiles[0].replace('.md', '');
@@ -41,7 +37,7 @@ export function registerStats(program: Command): void {
 
       // calculate current streak (consecutive days from today going backwards)
       let streak = 0;
-      const today = new Date();
+      const today = tzNow();
       // build a set of existing dates for fast lookup
       const dateSet = new Set(diaryFiles.map(f => f.replace('.md', '')));
 

@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import chalk from 'chalk';
-import { ensureNotesDir, escapeHtml } from '../utils';
+import { ensureNotesDir, escapeHtml, tzNow } from '../utils';
 import { notesDir } from '../config';
 
 export function registerExport(program: Command): void {
@@ -64,7 +64,7 @@ pre { white-space: pre-wrap; font-family: inherit; line-height: 1.8; color: #555
 </head>
 <body>
 <h1>📖 日记导出</h1>
-<p>导出日期: ${escapeHtml(new Date().toLocaleString('zh-CN'))}</p>
+<p>导出日期: ${escapeHtml(tzNow().toLocaleString('zh-CN'))}</p>
 ${bodyHtml}
 </body>
 </html>`;

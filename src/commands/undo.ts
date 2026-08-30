@@ -1,7 +1,9 @@
 import { Command } from 'commander';
 import * as fs from 'fs/promises';
+import * as path from 'path';
 import chalk from 'chalk';
 import { ensureNotesDir, getFullPath, getFilename, parseEntries } from '../utils';
+import { notesDir } from '../config';
 
 export function registerUndo(program: Command): void {
   program
@@ -71,8 +73,16 @@ export function registerUndo(program: Command): void {
 
       // Ensure trailing newline
       const finalContent = newContent.endsWith('\n') ? newContent : newContent + '\n';
+
+      // 写入前先备份原文件，撤销出错时可手动恢复
+      const backupDir = path.join(notesDir, 'backups');
+      await fs.mkdir(backupDir, { recursive: true });
+      const backupPath = path.join(backupDir, `${filename}.${Date.now()}.bak`);
+      await fs.writeFile(backupPath, content, 'utf-8');
+
       await fs.writeFile(filePath, finalContent, 'utf-8');
 
       console.log(chalk.green(`✓ 已撤销 ${toRemove} 条日记`));
+      console.log(chalk.gray(`  原文件已备份: ${path.relative(notesDir, backupPath)}`));
     });
 }

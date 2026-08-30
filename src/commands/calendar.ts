@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import * as fs from 'fs/promises';
 import chalk from 'chalk';
-import { ensureNotesDir, getFilename } from '../utils';
+import { ensureNotesDir, getFilename, tzNow } from '../utils';
 import { notesDir } from '../config';
 
 export function registerCalendar(program: Command): void {
@@ -23,7 +23,7 @@ export function registerCalendar(program: Command): void {
           return;
         }
       } else {
-        const now = new Date();
+        const now = tzNow();
         year = now.getFullYear();
         month = now.getMonth() + 1;
       }

@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import chalk from 'chalk';
-import { ensureNotesDir } from '../utils';
+import { ensureNotesDir, tzNow } from '../utils';
 import { notesDir } from '../config';
 
 export function registerMood(program: Command): void {
@@ -78,7 +78,7 @@ export function registerMood(program: Command): void {
 
       // Recent mood trend (last 7 days)
       console.log(chalk.white('\n  最近 7 天心情趋势:'));
-      const today = new Date();
+      const today = tzNow();
       for (let i = 6; i >= 0; i--) {
         const d = new Date(today);
         d.setDate(d.getDate() - i);

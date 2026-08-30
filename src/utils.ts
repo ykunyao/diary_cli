@@ -7,15 +7,62 @@ export async function ensureNotesDir(): Promise<void> {
   await fs.mkdir(notesDir, { recursive: true });
 }
 
-export function getFilename(date?: string): string {
-  const d = date ? new Date(date) : new Date();
+/**
+ * 返回"配置时区的当前挂钟时间"对应的伪 Date。
+ * Date 的字段方法（getFullYear/getDay/setDate…）都按系统时区取值，
+ * 先把当前时刻换算到配置时区，之后所有日期字段判断都和用户配置一致。
+ */
+export function tzNow(now: Date = new Date()): Date {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(now);
+  const get = (type: string): string => parts.find(p => p.type === type)?.value ?? '00';
+  // 无时区后缀的 ISO 串按本地时区解析，恰好得到"配置时区挂钟"的伪 Date
+  return new Date(`${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}`);
+}
+
+/**
+ * 解析用户输入的日期参数（YYYY-MM-DD）为本地零点的 Date。
+ * 不用 new Date(str)：ISO 日期串按 UTC 解析，在西边时区会偏一天。
+ * 月/日允许 1-2 位；格式错误或日期不存在（如 2026-02-31）返回 null。
+ */
+export function parseDateArg(s: string): Date | null {
+  const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const date = new Date(y, mo - 1, d);
+  // new Date 会把 2026-02-31 滚动成 3 月，这里拦下来
+  if (date.getFullYear() !== y || date.getMonth() !== mo - 1 || date.getDate() !== d) return null;
+  return date;
+}
+
+/**
+ * 处理命令的日期参数：无参数返回"今天"（配置时区），有参数则解析。
+ * 非法输入返回 null，由调用方提示错误。
+ */
+export function resolveDateArg(dateStr?: string): Date | null {
+  if (!dateStr) return tzNow();
+  return parseDateArg(dateStr);
+}
+
+export function getFilename(date?: Date): string {
+  const d = date ?? tzNow();
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}.md`;
 }
 
-export function getFullPath(date?: string): string {
+export function getFullPath(date?: Date): string {
   return path.join(notesDir, getFilename(date));
 }
 

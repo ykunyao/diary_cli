@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import chalk from 'chalk';
-import { ensureNotesDir, getFilename, parseEntries } from '../utils';
+import { ensureNotesDir, getFilename, parseEntries, resolveDateArg } from '../utils';
 import { notesDir } from '../config';
 
 const WEEKDAY_NAMES = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
@@ -16,8 +16,8 @@ export function registerWeekly(program: Command): void {
       await ensureNotesDir();
 
       // Determine which week: the week containing `dateStr` (or today)
-      const refDate = dateStr ? new Date(dateStr) : new Date();
-      if (isNaN(refDate.getTime())) {
+      const refDate = resolveDateArg(dateStr);
+      if (!refDate) {
         console.log(chalk.red('日期格式错误，请使用 YYYY-MM-DD'));
         return;
       }

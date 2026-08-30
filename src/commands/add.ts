@@ -33,14 +33,14 @@ export function registerAdd(program: Command): void {
     const entry = `- ${prefix}${timestamp}\n  ${content}\n`;
 
     // 如果文件不存在，先写标题
-    let existing = '';
     try {
-      existing = await fs.readFile(filePath, 'utf-8');
+      await fs.access(filePath);
     } catch {
-      existing = `# ${getFilename()}\n\n`;
+      await fs.writeFile(filePath, `# ${getFilename()}\n\n`, 'utf-8');
     }
 
-    await fs.writeFile(filePath, existing + entry, 'utf-8');
+    // 追加写入：不回读旧内容，避免并发/中断时覆盖丢失已有日记
+    await fs.appendFile(filePath, entry, 'utf-8');
     console.log(chalk.green('✓ 已记录'));
     console.log(chalk.gray(`  ${getFilename()}`));
 
